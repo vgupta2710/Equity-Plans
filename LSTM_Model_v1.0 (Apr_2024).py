@@ -27,6 +27,8 @@ from imblearn.over_sampling import SMOTE
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, LSTM
 from keras.callbacks import EarlyStopping
+from keras.utils.np_utils import to_categorical
+from keras import models
 
 ####Read historical data ######
 historical = pd.read_csv('Backtest Data/Historical_combined_latest.csv')
@@ -102,7 +104,8 @@ for a in historical['date'].unique():
             tl.append(Y_var_low2)
             transformed.append(tl)         
 
-working_data_set = pd.DataFrame(transformed).reset_index(drop=True).round(2)
+working_data_set = pd.DataFrame(transformed).reset_index(drop=True).round(1)
+
 
 working_data_set['Up_Move_Actual'] = working_data_set[backcandles+4] - working_data_set[backcandles+3] 
 working_data_set['Up_Move_Actual_'] = working_data_set[backcandles+5] - working_data_set[backcandles+3]
@@ -110,6 +113,8 @@ working_data_set['Up_Move_Actual_'] = working_data_set[backcandles+5] - working_
 working_data_set['Down_Move_Actual'] = working_data_set[backcandles+6] - working_data_set[backcandles+7]
 working_data_set['Down_Move_Actual_'] = working_data_set[backcandles+6] - working_data_set[backcandles+8]
 
+
+###################################### Binary Classification Data Building ################################################
 working_data_set['bull1']= working_data_set.apply(lambda x: 1 if x['Up_Move_Actual']>200 else 0,axis=1 )
 working_data_set['bull1_']= working_data_set.apply(lambda x: 1 if x['Up_Move_Actual_']>200 else 0,axis=1 )
 working_data_set['bear1']= working_data_set.apply(lambda x: 1 if x['Down_Move_Actual']>200 else 0,axis=1 ) 
@@ -182,92 +187,82 @@ f.set(xlabel='Y_Pred', ylabel='Y_True')
 print(metrics.classification_report(y_test,y_pred,digits=3 ))
 
 
-######################################  Model Building - Multi Label ################################################
-
+######################################  Data Building - Multi Label ################################################
 working_data_set['bull1']= working_data_set.apply(lambda x: 1 if x['Up_Move_Actual']>200 else 0,axis=1 )
 working_data_set['bull1_']= working_data_set.apply(lambda x: 1 if x['Up_Move_Actual_']>200 else 0,axis=1 )
 working_data_set['bear1']= working_data_set.apply(lambda x: 2 if x['Down_Move_Actual']>200 else 0,axis=1 ) 
 working_data_set['bear1_']= working_data_set.apply(lambda x: 2 if x['Down_Move_Actual_']>200 else 0,axis=1 ) 
 
 working_data_set['Move'] = (working_data_set['bull1']+working_data_set['bear1'])
+working_data_set = working_data_set[working_data_set['Move']!=3] ##Exclude which has Bull & Bear movement in one 30mins
 
 X_train = working_data_set.iloc[:-48000,:backcandles]
-y_train = working_data_set.iloc[:-48000]["Move"].shape[1]
-X_train_val = working_data_set.iloc[-48000:-24000,:backcandles]
-y_train_val = working_data_set.iloc[-48000:-24000]["Move"]
+y_train = working_data_set.iloc[:-48000]["Move"]
+X_train_val = working_data_set.iloc[-48000:-2000,:backcandles]
+y_train_val = working_data_set.iloc[-48000:-2000]["Move"]
 X_test = working_data_set.iloc[-24000:,:backcandles]
 y_test = working_data_set.iloc[-24000:]["Move"]
 
-counter = Counter(y_train)
-estimate = counter[0] / counter[1]
-print('Estimate: %.3f' % estimate)
-
-
-
-sns.barplot(working_data_set['Move'].unique(),working_data_set['Move'].groupby(by=working_data_set['Move']).count())
-plt.plot(working_data_set['Move'].groupby(by=working_data_set['Move']).count(),type='bar')
-
-sns.barplot(y_train.unique(),y_train.groupby(by=y_train).count())
 
 oversample = SMOTE()
 X_train, y_train = oversample.fit_resample(X_train, y_train)
 X_train_val, y_train_val = oversample.fit_resample(X_train_val, y_train_val)
 X_test, y_test = oversample.fit_resample(X_test, y_test)
 
-counter = Counter(y_train)
+sns.barplot(working_data_set['Move'].unique(),working_data_set['Move'].groupby(by=working_data_set['Move']).count())
+sns.barplot(y_train.unique(),y_train.groupby(by=y_train).count())
+sns.barplot(y_test.unique(),y_test.groupby(by=y_test).count())
+
+counter = Counter(y_train_val)
 estimate = counter[0] / counter[1]
 print('Estimate: %.3f' % estimate)
 
-model = Sequential()
-model.add(LSTM(units=20, return_sequences=True, input_shape=(30,)))
+y_train_tf = to_categorical(y_train)
+y_train_val_tf = to_categorical(y_train_val)
+y_test_tf = to_categorical(y_test)
 
-model.add(Dense(4, activation='softmax'))
-model.summary()
 
-from keras import models
 
-model = models.Sequential()
-model.add(Dense(15, activation='relu', input_shape=(30,)))
-model.add(Dense(12, activation='relu'))
-model.add(Dense(4, activation='softmax'))
+######################################  Model Building ################################################
+def nn_model(X_train, y_train, X_train_val, y_train_val,epoch):
+    model = Sequential()
+    model.add(LSTM(units=21, return_sequences=True, input_shape=(X_train.shape[1],1)))
+    model.add(LSTM(units=15, activation='relu'))
+    model.add(Dense(12, activation='relu'))
+    model.add(Dense(9, activation='relu'))
+    model.add(Dense(3, activation='softmax'))
 
-es = EarlyStopping(monitor='loss', mode='min', verbose=1,patience=10)
-epoch = 50
-opt = SGD(lr=0.01, momentum=0.9)
-model.compile(loss='categorical_crossentropy', optimizer='rmsprop', metrics=['accuracy'])
-model_history  = model.fit(X_train, y_train, epochs=epoch, batch_size=10000, verbose=1,validation_data=[X_train_val,y_train_val],callbacks = [es] )
+    es = EarlyStopping(monitor='loss', mode='min', verbose=1,patience=10)
+    
+    opt = SGD(lr=0.001, momentum=0.9)
+    model.compile(loss='categorical_crossentropy', optimizer=opt, metrics=['accuracy'])
+    model_history  = model.fit(X_train, y_train, epochs=epoch, batch_size=10000, verbose=1,validation_data=[X_train_val,y_train_val],callbacks = [es] )
+    return model,epoch,model_history
 
-history_dict = model_history.history
-loss_values = history_dict['loss']
-val_loss_values = history_dict['val_loss']
-epochs = range(1, epoch + 1)
-plt.plot(epochs, loss_values, 'bo', label='Training loss')
-plt.plot(epochs, val_loss_values, 'b', label='Validation loss')
+def model_performance_outut(epoch, model_history):
+    history_dict = model_history.history
+    loss_values = history_dict['loss']
+    val_loss_values = history_dict['val_loss']
+    epochs = range(1, epoch + 1)
+    plt.plot(epochs, loss_values, 'bo', label='Training loss')
+    plt.plot(epochs, val_loss_values, 'b', label='Validation loss')
+    plt.title   ('Training and validation loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.show()
 
-plt.title   ('Training and validation loss')
-plt.xlabel('Epochs')
-plt.ylabel('Loss')
-plt.legend()
-plt.show()
+epoch = 10
+model, epoch, model_history = nn_model(X_train, y_train_tf, X_train_val, y_train_val_tf,epoch)
+
+model_performance_outut(epoch, model_history)
 
 
 y_pred=pd.DataFrame(model.predict(X_test))
-
 for i in y_pred.columns:
     y_pred[i]= y_pred[i].apply(lambda x: 0 if x < 0.5 else i)
 y_pred['agg'] = y_pred.sum(axis=1)
-cm = confusion_matrix(working_data_set.iloc[-24000:]["Move"],y_pred['agg'])
+cm = confusion_matrix(y_test,y_pred['agg'])
 f = sns.heatmap(cm, annot=True, fmt='d')
 f.set(xlabel='Y_Pred', ylabel='Y_True')
-print(metrics.classification_report(working_data_set.iloc[-24000:]["Move"],y_pred['agg'],digits=3 ))
-
-
-
-from keras.utils.np_utils import to_categorical
-y_train = to_categorical(y_train)
-y_train_val = to_categorical(y_train_val)
-y_test = to_categorical(y_test)
-
-
-pd.DataFrame(to_categorical(y_train))
-y_train
+print(metrics.classification_report(y_test,y_pred['agg'],digits=3 ))
