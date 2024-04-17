@@ -29,19 +29,20 @@ from keras.layers import Dense, Dropout, LSTM
 from keras.callbacks import EarlyStopping
 from keras.utils.np_utils import to_categorical
 from keras import models
+from sklearn.preprocessing import normalize
 
 ####Read historical data ######
 historical = pd.read_csv('Backtest Data/Historical_combined_latest.csv')
 historical = historical.drop(axis=1,columns={'Unnamed: 0'})
-historical = historical[historical['candleid'] > 655555]
-historical = pd.concat([historical[(historical['hour']==9) & (historical['min'] > 15)],historical[(historical['hour']>9)]], axis =0)
+historical = historical[historical['candleid'] > 555555]
+historical = pd.concat([historical[(historical['hour']==9) & (historical['min'] > 30)],historical[(historical['hour']>9)]], axis =0)
 
 
 ##Data Transformatipns: 
 Y=[]
 transformed = []
 tl=[]
-backcandles = 30
+backcandles = 45
 future_candles = 30
 future_candles2 = 60
 historical['diff'] = historical['Close'].astype('float')  - historical['Open'].astype('float')
@@ -50,6 +51,7 @@ historical['upper_wick'] = historical['Close'].astype('float')  - historical['Hi
 historical['High'] = historical['High'].astype('float')
 historical['Low'] = historical['Low'].astype('float')
 historical['Open'] = historical['Open'].astype('float')
+
 
 for a in historical['date'].unique():
     day_df = historical[historical['date']==a]
@@ -105,29 +107,29 @@ for a in historical['date'].unique():
             transformed.append(tl)         
 
 working_data_set = pd.DataFrame(transformed).reset_index(drop=True).round(1)
-
-
 working_data_set['Up_Move_Actual'] = working_data_set[backcandles+4] - working_data_set[backcandles+3] 
 working_data_set['Up_Move_Actual_'] = working_data_set[backcandles+5] - working_data_set[backcandles+3]
-
 working_data_set['Down_Move_Actual'] = working_data_set[backcandles+6] - working_data_set[backcandles+7]
 working_data_set['Down_Move_Actual_'] = working_data_set[backcandles+6] - working_data_set[backcandles+8]
 
-
 ###################################### Binary Classification Data Building ################################################
-working_data_set['bull1']= working_data_set.apply(lambda x: 1 if x['Up_Move_Actual']>200 else 0,axis=1 )
-working_data_set['bull1_']= working_data_set.apply(lambda x: 1 if x['Up_Move_Actual_']>200 else 0,axis=1 )
-working_data_set['bear1']= working_data_set.apply(lambda x: 1 if x['Down_Move_Actual']>200 else 0,axis=1 ) 
-working_data_set['bear1_']= working_data_set.apply(lambda x: 1 if x['Down_Move_Actual_']>200 else 0,axis=1 ) 
+working_data_set['bull1']= working_data_set.apply(lambda x: 1 if x['Up_Move_Actual']>100 else 0,axis=1 )
+working_data_set['bull1_']= working_data_set.apply(lambda x: 1 if x['Up_Move_Actual_']>100 else 0,axis=1 )
+working_data_set['bear1']= working_data_set.apply(lambda x: 1 if x['Down_Move_Actual']>100 else 0,axis=1 ) 
+working_data_set['bear1_']= working_data_set.apply(lambda x: 1 if x['Down_Move_Actual_']>100 else 0,axis=1 ) 
 
-######################################  Model Building ################################################
-X_train = working_data_set.iloc[:-48000,:backcandles]
+working_data_set = pd.concat([working_data_set,working_data_set[working_data_set['bull1']==1]
+                              ,working_data_set[working_data_set['bull1']==1]
+                              ,working_data_set[working_data_set['bull1']==1]
+                              ,working_data_set[working_data_set['bull1']==1]])
+working_data_set = working_data_set.sample(frac = 1)
+
+X_train = normalize(working_data_set.iloc[:-48000,:backcandles],norm= 'max').round(1)
 y_train = working_data_set.iloc[:-48000]["bull1"]
-X_train_val = working_data_set.iloc[-48000:-24000,:backcandles]
+X_train_val = normalize(working_data_set.iloc[-48000:-24000,:backcandles],norm= 'max').round(1)
 y_train_val = working_data_set.iloc[-48000:-24000]["bull1"]
-X_test = working_data_set.iloc[-24000:,:backcandles]
+X_test = normalize(working_data_set.iloc[-24000:,:backcandles],norm= 'max').round(1)
 y_test = working_data_set.iloc[-24000:]["bull1"]
-
 
 counter = Counter(y_train)
 estimate = counter[0] / counter[1]
@@ -138,28 +140,34 @@ X_train, y_train = oversample.fit_resample(X_train, y_train)
 X_train_val, y_train_val = oversample.fit_resample(X_train_val, y_train_val)
 X_test, y_test = oversample.fit_resample(X_test, y_test)
 
-counter = Counter(y_train)
+
+counter = Counter(y_train_val)
 estimate = counter[0] / counter[1]
 print('Estimate: %.3f' % estimate)
 
+######################################  Model Building ################################################
+
 def binary_classification_nn(X_train, y_train, X_train_val, y_train_val,epoch):
     model = Sequential()
-    model.add(LSTM(units=13, return_sequences=True, input_shape=(X_train.shape[1],1)))
-    model.add(LSTM(12,activation='relu'))
+    model.add(LSTM(units=40, return_sequences=True, input_shape=(X_train.shape[1],1)))
+    model.add(LSTM(30,activation='relu'))
+    model.add(Dense(21,activation='relu'))
+    #model.add(Dense(15,activation='relu'))
+    #model.add(Dense(9,activation='relu'))
     model.add(Dense(7,activation='relu'))
-    model.add(Dense(5,activation='relu'))
+    #model.add(Dense(5,activation='relu'))
     model.add(Dense(3,activation='relu'))
     model.add(Dense(1, activation='sigmoid'))
     model.summary()
 
-    es = EarlyStopping(monitor='loss', mode='min', verbose=1,patience=10)
+    es = EarlyStopping(monitor='loss', mode='min', verbose=1,patience=20)
     
-    opt = SGD(lr=0.01, momentum=0.9)
-    model.compile(loss='binary_crossentropy', optimizer=opt, metrics=['accuracy'])
+    opt = SGD(learning_rate=0.001, momentum=0.9)
+    model.compile(loss='binary_crossentropy', optimizer=opt, metrics=['Precision'])
     model_history  = model.fit(X_train, y_train, epochs=epoch, batch_size=10000, verbose=1,validation_data=[X_train_val,y_train_val],callbacks = [es] )
     return model,model_history
 
-epoch = 550
+epoch = 10
 model, model_history = binary_classification_nn(X_train, y_train, X_train_val, y_train_val,epoch)
 
 history_dict = model_history.history
@@ -177,7 +185,7 @@ plt.show()
 
 
 y_pred=pd.DataFrame(model.predict(X_test))
-y_pred = y_pred[0].apply(lambda x: 0 if x < 0.6 else 1)
+y_pred = y_pred[0].apply(lambda x: 0 if x < 0.501 else 1)
 cm = confusion_matrix(y_test,y_pred)
 f = sns.heatmap(cm, annot=True, fmt='d')
 f.set(xlabel='Y_Pred', ylabel='Y_True')
@@ -185,13 +193,18 @@ print(metrics.classification_report(y_test,y_pred,digits=3 ))
 
 
 y_pred=pd.DataFrame(model.predict(X_train))
-y_pred = y_pred[0].apply(lambda x: 0 if x < 0.6 else 1)
+y_pred = y_pred[0].apply(lambda x: 0 if x < 0.5 else 1)
 cm = confusion_matrix(y_train,y_pred)
 f = sns.heatmap(cm, annot=True, fmt='d')
 f.set(xlabel='Y_Pred', ylabel='Y_True')
 print(metrics.classification_report(y_test,y_pred,digits=3 ))
 
+X_train=pd.DataFrame(X_train)
+X_train['sum'] = pd.DataFrame(X_train).sum(axis=1)
 
+normalize(np.sqrt(np.square(working_data_set.iloc[:,:backcandles])),norm='max')
+
+X_train[0] 
 ######################################  Data Building - Multi Label ################################################
 working_data_set['bull1']= working_data_set.apply(lambda x: 1 if x['Up_Move_Actual']>200 else 0,axis=1 )
 working_data_set['bull1_']= working_data_set.apply(lambda x: 1 if x['Up_Move_Actual_']>200 else 0,axis=1 )
